@@ -1,0 +1,44 @@
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg: #0f1117;
+  --surface: #1a1d27;
+  --border: #2a2d3a;
+  --text: #e2e8f0;
+  --muted: #8892a4;
+  --buy: #16a34a;
+  --buy-bg: #052e16;
+  --sell: #dc2626;
+  --sell-bg: #2d0a0a;
+  --accent: #6366f1;
+  --radius: 8px;
+}
+
+[data-theme="light"] {
+  --bg: #f1f5f9;
+  --surface: #ffffff;
+  --border: #e2e8f0;
+  --text: #0f172a;
+  --muted: #64748b;
+  --buy-bg: #dcfce7;
+  --sell-bg: #fee2e2;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Inter", system-ui, sans-serif;
+  font-size: 14px;
+  min-height: 100vh;
+}
+
+/* scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--bg); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.trade-row:hover { filter: brightness(1.15); cursor: default; }
+
+@media (max-width: 600px) {
+  header { flex-direction: column; align-items: flex-start; }
+}
