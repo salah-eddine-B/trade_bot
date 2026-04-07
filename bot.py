@@ -214,6 +214,11 @@ async def handler(event):
 # =========================
 # ▶️ START BOT
 # =========================
-client.start()
-print("🤖 Bot is running...")
-client.run_until_disconnected()
+import asyncio
+
+async def main():
+    await client.start()
+    print("🤖 Bot is running...")
+    await client.run_until_disconnected()
+
+asyncio.run(main())
