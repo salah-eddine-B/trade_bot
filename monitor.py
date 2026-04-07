@@ -160,57 +160,97 @@ async def position_monitor(client, notify_id):
     Polls MT5 every POLL_INTERVAL seconds.
     Sends a message when a position is opened or closed.
     """
+    # resolve the entity once at startup so send_message always works
+    try:
+        me = await client.get_entity(notify_id)
+    except Exception:
+        me = "me"   # fallback: send to Saved Messages
+
+    async def notify(msg):
+        try:
+            await client.send_message(me, msg, parse_mode="markdown")
+        except Exception as e:
+            print(f"⚠️ Notify failed: {e}")
+
     known = {p.ticket for p in (mt5.positions_get() or [])}
+    print(f"👁️ Monitor started — tracking {len(known)} existing position(s)")
 
     while True:
         await asyncio.sleep(POLL_INTERVAL)
-        current_positions = mt5.positions_get() or []
-        current = {p.ticket: p for p in current_positions}
-        current_ids = set(current.keys())
+        try:
+            current_positions = mt5.positions_get() or []
+            current = {p.ticket: p for p in current_positions}
+            current_ids = set(current.keys())
 
-        # newly opened
-        for ticket in current_ids - known:
-            pos = current[ticket]
-            msg = f"🚀 *New position opened!*\n\n{_fmt_position(pos)}"
-            await client.send_message(notify_id, msg, parse_mode="markdown")
+            # newly opened
+            for ticket in current_ids - known:
+                pos = current[ticket]
+                msg = f"🚀 *New position opened!*\n\n{_fmt_position(pos)}"
+                print(f"📤 Notifying: new position {ticket}")
+                await notify(msg)
 
-        # closed
-        for ticket in known - current_ids:
-            # position gone — try to get info from history
-            history = mt5.history_deals_get(position=ticket)
-            if history:
-                deal  = history[-1]
-                pnl   = deal.profit
-                sign  = "+" if pnl >= 0 else ""
-                emoji = "🟢" if pnl >= 0 else "🔴"
-                msg   = (
-                    f"{emoji} *Position closed*\n"
-                    f"  Ticket: `{ticket}`\n"
-                    f"  Symbol: `{deal.symbol}`\n"
-                    f"  P&L: `{sign}{pnl:.2f} USD`\n"
-                    f"  Time: {datetime.fromtimestamp(deal.time).strftime('%H:%M:%S')}"
+            # closed
+            for ticket in known - current_ids:
+                from datetime import datetime, timedelta
+                now  = datetime.now()
+                from_dt = now - timedelta(hours=24)
+                history = mt5.history_deals_get(
+                    int(from_dt.timestamp()),
+                    int(now.timestamp()),
+                    group="*"
                 )
-            else:
-                msg = f"📕 Position `{ticket}` was closed."
-            await client.send_message(notify_id, msg, parse_mode="markdown")
+                # find the deal matching this position ticket
+                deal = None
+                if history:
+                    matches = [d for d in history if d.position_id == ticket]
+                    if matches:
+                        deal = matches[-1]
 
-        known = current_ids
+                if deal:
+                    pnl   = deal.profit
+                    sign  = "+" if pnl >= 0 else ""
+                    emoji = "🟢" if pnl >= 0 else "🔴"
+                    msg   = (
+                        f"{emoji} *Position closed*\n"
+                        f"  Ticket: `{ticket}`\n"
+                        f"  Symbol: `{deal.symbol}`\n"
+                        f"  P&L: `{sign}{pnl:.2f} USD`\n"
+                        f"  Time: {datetime.fromtimestamp(deal.time).strftime('%H:%M:%S')}"
+                    )
+                else:
+                    msg = f"📕 Position `{ticket}` was closed."
+
+                print(f"📤 Notifying: closed position {ticket}")
+                await notify(msg)
+
+            known = current_ids
+
+        except Exception as e:
+            print(f"⚠️ Monitor loop error: {e}")
 
 
 # ── Register all commands on the client ──────────────────────────────────────
 def register_commands(client):
     """Call this once after TelegramClient is created."""
+    from telethon import events as tl_events
 
     def guard(handler):
-        """Reject commands from anyone who isn't ADMIN_ID."""
+        """Only accept commands from ADMIN_ID (including Saved Messages)."""
         async def wrapped(event):
-            if ADMIN_ID and event.sender_id != ADMIN_ID:
-                return  # silently ignore
+            sender = event.sender_id
+            # allow if sender is admin OR message is in your own Saved Messages
+            if ADMIN_ID and sender != ADMIN_ID:
+                try:
+                    me = await client.get_me()
+                    if sender != me.id:
+                        return  # not you — ignore
+                except Exception:
+                    return
             await handler(event)
         return wrapped
 
-    client.add_event_handler(guard(cmd_status),   __import__("telethon").events.NewMessage(pattern=r"(?i)^/status"))
-    client.add_event_handler(guard(cmd_price),    __import__("telethon").events.NewMessage(pattern=r"(?i)^/price"))
-    client.add_event_handler(guard(cmd_trades),   __import__("telethon").events.NewMessage(pattern=r"(?i)^/trades"))
-    client.add_event_handler(guard(cmd_close),    __import__("telethon").events.NewMessage(pattern=r"(?i)^/close\b"))
-    client.add_event_handler(guard(cmd_closeall), __import__("telethon").events.NewMessage(pattern=r"(?i)^/closeall"))
+    client.add_event_handler(guard(cmd_status),   tl_events.NewMessage(pattern=r"(?i)^/status"))
+    client.add_event_handler(guard(cmd_price),    tl_events.NewMessage(pattern=r"(?i)^/price"))
+    client.add_event_handler(guard(cmd_trades),   tl_events.NewMessage(pattern=r"(?i)^/trades"))
+    client.add_event_handler(guard(cmd_close),    tl_events.NewMessage(pattern=r"(?i)^/close\b"))
+    client.add_event_handler(guard(cmd_closeall), tl_events.NewMessage(pattern=r"(?i)^/closeall"))

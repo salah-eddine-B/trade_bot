@@ -225,6 +225,11 @@ async def main():
     # start position monitor if ADMIN_ID is set
     if ADMIN_ID:
         asyncio.create_task(position_monitor(client, ADMIN_ID))
+        # send a startup ping so you know the bot is alive
+        try:
+            await client.send_message(ADMIN_ID, "🤖 Bot started and monitoring positions.")
+        except Exception:
+            await client.send_message("me", "🤖 Bot started and monitoring positions.")
         print(f"👁️ Position monitor active → notifying {ADMIN_ID}")
     else:
         print("⚠️ ADMIN_ID not set in monitor.py — position monitor disabled")
