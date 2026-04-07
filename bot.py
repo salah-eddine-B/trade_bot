@@ -1,6 +1,7 @@
 from telethon import TelegramClient, events
 import MetaTrader5 as mt5
 from parser import parse_signal
+from monitor import register_commands, position_monitor, ADMIN_ID
 import json
 import re
 from datetime import datetime
@@ -218,7 +219,16 @@ import asyncio
 
 async def main():
     await client.start()
+    register_commands(client)   # ← remote control commands
     print("🤖 Bot is running...")
+
+    # start position monitor if ADMIN_ID is set
+    if ADMIN_ID:
+        asyncio.create_task(position_monitor(client, ADMIN_ID))
+        print(f"👁️ Position monitor active → notifying {ADMIN_ID}")
+    else:
+        print("⚠️ ADMIN_ID not set in monitor.py — position monitor disabled")
+
     await client.run_until_disconnected()
 
 asyncio.run(main())
