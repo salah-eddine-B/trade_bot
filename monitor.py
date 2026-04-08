@@ -146,10 +146,12 @@ async def cmd_trades(event):
         for t in recent:
             action = t.get("action", "?")
             emoji  = "🟢" if action == "BUY" else "🔴"
+            tp_raw = t.get('tp', 0)
+            tp_str = "/".join(f"{v:.2f}" for v in tp_raw) if isinstance(tp_raw, list) else f"{float(tp_raw):.2f}"
             lines.append(
                 f"{emoji} *{t.get('symbol', '?')}* {action} | "
                 f"Entry: `{float(t.get('entry', 0)):.2f}` | "
-                f"TP: `{float(t.get('tp', 0)):.2f}` | "
+                f"TP: `{tp_str}` | "
                 f"SL: `{float(t.get('sl', 0)):.2f}` | "
                 f"Lot: `{t.get('lot')}` | "
                 f"`{t.get('time', '')}`"
