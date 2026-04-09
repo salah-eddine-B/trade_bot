@@ -80,6 +80,8 @@ def close_position(pos):
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
     result = mt5.order_send(request)
+    if result is None:
+        return False, "MT5 returned None — AutoTrading may be OFF or market closed"
     if result.retcode == mt5.TRADE_RETCODE_DONE:
         return True, f"Closed ticket {pos.ticket} | P&L: {pos.profit:+.2f} USD"
     return False, f"Failed retcode={result.retcode}: {result.comment}"
