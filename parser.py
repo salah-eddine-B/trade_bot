@@ -31,9 +31,10 @@ def parse_signal(text):
     action = "BUY" if "BUY" in text else "SELL" if "SELL" in text else None
 
     # ✅ TP + TARGET support
+    # \d{0,2} — only match a short TP index (TP1, TP2) never a full price
     tps = [
         float(v) for v in re.findall(
-            r'(?:TP|TARGET)\s*\d*\s*[:\-]?\s*\(?\s*' + _NUM,
+            r'(?:TP|TARGET)\d{0,2}\s*[:\-]?\s*\(?\s*' + _NUM,
             text
         )
     ]
