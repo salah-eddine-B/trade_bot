@@ -1,79 +1,122 @@
 import re
 
 
-# All numbers that appear in a signal, tagged by their role
-_NUM = r'(\d{3,6}(?:\.\d+)?)'   # 3-6 digit price, optional decimals
+_NUM = r'(\d{3,6}(?:\.\d+)?)'
 
 
-def _extract_numbers(text: str) -> list[float]:
-    """Return every price-like number in the text, in order."""
-    return [float(x) for x in re.findall(r'\d{3,6}(?:\.\d+)?', text)]
+def clean_text(text: str) -> str:
+    """Remove noise like emojis, hashtags, usernames."""
+    text = re.sub(r'[@#]\S+', ' ', text)   # remove @user, #tags
+    text = re.sub(r'[^\w\s\.\-/]', ' ', text)  # remove emojis/symbols
+    return text.upper()
+
+
+def _extract_numbers(text: str):
+    return [float(x) for x in re.findall(_NUM, text)]
+
+
+def detect_symbol(text: str):
+    patterns = {
+        "XAUUSD": r'(XAU\s*/?\s*USD|GOLD)',
+        "EURUSD": r'(EUR\s*/?\s*USD)',
+        "GBPUSD": r'(GBP\s*/?\s*USD)',
+        "BTCUSD": r'(BTC\s*/?\s*USD|BITCOIN)',
+        "US30": r'US30',
+        "NAS100": r'NAS100',
+    }
+
+    for sym, pattern in patterns.items():
+        if re.search(pattern, text):
+            return sym
+
+    return None
 
 
 def parse_signal(text: str) -> dict:
-    upper = text.upper()
+    text = clean_text(text)
 
-    # ── Symbol ────────────────────────────────────────────────────────────────
-    sym_match = re.search(r'(XAUUSD|GOLD|EURUSD|GBPUSD|BTCUSD|US30|NAS100)', upper)
-    raw_sym   = sym_match.group(1) if sym_match else None
-    symbol    = "XAUUSD" if raw_sym in ("XAUUSD", "GOLD") else raw_sym
+    # =========================
+    # SYMBOL
+    # =========================
+    symbol = detect_symbol(text)
 
-    # ── Action ────────────────────────────────────────────────────────────────
-    action = "BUY" if "BUY" in upper else "SELL" if "SELL" in upper else None
+    # =========================
+    # ACTION
+    # =========================
+    action = None
+    if "BUY" in text:
+        action = "BUY"
+    elif "SELL" in text:
+        action = "SELL"
 
-    # ── Take Profits — grab first before entry so we can exclude them ─────────
-    # Matches: TP1 3210, TP: 3210, TP 3210, TP3210
-    tps = [float(v) for v in re.findall(r'TP\s*\d*\s*[:\-]?\s*' + _NUM, upper)]
+    # =========================
+    # TAKE PROFITS
+    # =========================
+    tps = [float(v) for v in re.findall(r'TP\s*\d*\s*[:\-]?\s*' + _NUM, text)]
 
-    # ── Stop Loss ─────────────────────────────────────────────────────────────
-    sl_match = re.search(r'SL\s*[:\-]?\s*' + _NUM, upper)
+    # =========================
+    # STOP LOSS
+    # =========================
+    sl_match = re.search(r'SL\s*[:\-]?\s*' + _NUM, text)
     sl = float(sl_match.group(1)) if sl_match else None
 
-    # ── Entry ─────────────────────────────────────────────────────────────────
+    # detect "SL INBOX"
+    if "SL INBOX" in text or "SL @ " in text:
+        sl = None
+
+    # =========================
+    # ENTRY
+    # =========================
     entry = None
 
-    # 1. Explicit range:  4702/4706  or  4702 - 4706  or  4702~4706
-    range_match = re.search(r'(\d{3,6}(?:\.\d+)?)\s*[/\-~]\s*(\d{3,6}(?:\.\d+)?)', upper)
+    # 1. Range
+    range_match = re.search(rf'{_NUM}\s*[/\-~]\s*{_NUM}', text)
     if range_match:
         a, b = float(range_match.group(1)), float(range_match.group(2))
-        # make sure it's not a TP or SL value
-        if a not in tps and b not in tps and a != sl and b != sl:
+        if a not in tps and b not in tps:
             entry = (a + b) / 2
 
-    # 2. Keyword:  ENTRY 4752  /  @ 4752  /  AT 4752
+    # 2. ENTRY / AT / @
     if entry is None:
-        kw = re.search(r'(?:ENTRY|@|AT)\s*[:\-]?\s*' + _NUM, upper)
+        kw = re.search(r'(ENTRY|@|AT)\s*[:\-]?\s*' + _NUM, text)
         if kw:
-            entry = float(kw.group(1))
+            entry = float(kw.group(2))
 
-    # 3. Number right after BUY/SELL:  BUY 4752  /  SELL 3210.50
+    # 3. After BUY/SELL
     if entry is None:
-        after_action = re.search(r'(?:BUY|SELL)\s+' + _NUM, upper)
+        after_action = re.search(r'(BUY|SELL)\s+' + _NUM, text)
         if after_action:
-            candidate = float(after_action.group(1))
-            if candidate not in tps and candidate != sl:
+            candidate = float(after_action.group(2))
+            if candidate not in tps:
                 entry = candidate
 
-    # 4. Smart fallback — collect all numbers, remove known TP/SL values,
-    #    pick the one closest to the median of all prices (most "central" price)
+    # 4. Smart fallback (improved)
     if entry is None:
-        all_nums = _extract_numbers(upper)
-        known    = set(tps) | ({sl} if sl else set())
-        candidates = [n for n in all_nums if n not in known]
-        if candidates:
-            median = sorted(candidates)[len(candidates) // 2]
-            entry  = min(candidates, key=lambda x: abs(x - median))
+        nums = _extract_numbers(text)
+        known = set(tps)
+        if sl:
+            known.add(sl)
 
-    # ── Auto SL if missing ────────────────────────────────────────────────────
+        candidates = [n for n in nums if n not in known]
+
+        if candidates:
+            # prefer numbers close to action keyword
+            idx = text.find(action) if action else 0
+            distances = [(abs(text.find(str(int(n))) - idx), n) for n in candidates]
+            entry = sorted(distances)[0][1]
+
+    # =========================
+    # AUTO SL
+    # =========================
     if sl is None and entry is not None:
         distance = 10.0 if symbol == "XAUUSD" else 0.005
         sl = round(entry - distance if action == "BUY" else entry + distance, 5)
 
     return {
-        "symbol":     symbol,
-        "action":     action,
-        "entry":      entry,
-        "tps":        tps,
-        "sl":         sl,
+        "symbol": symbol,
+        "action": action,
+        "entry": entry,
+        "tps": tps,
+        "sl": sl,
         "sl_missing": sl_match is None,
     }
