@@ -138,6 +138,14 @@ def send_trade(data):
 
         sl = round(live_price - sl_distance, 2) if action == "BUY" else round(live_price + sl_distance, 2)
 
+        # ── Lot split (needed before TP fallback calc) ───────────────────────
+        sym_info = mt5.symbol_info(symbol)
+        min_lot  = sym_info.volume_min  if sym_info else 0.01
+        lot_step = sym_info.volume_step if sym_info else 0.01
+        n_tps    = len(tps) if tps else 1
+        per_lot  = max(min_lot, round(LOT / n_tps, 2))
+        per_lot  = round(round(per_lot / lot_step) * lot_step, 2)
+
         # ── TPs: validate direction ──────────────────────────────────────────
         valid_tps = []
         for tp_val in tps:
@@ -151,18 +159,21 @@ def send_trade(data):
                 if tp < live_price and tp < sl:
                     valid_tps.append(tp)
 
-        # ── TP fallback ──────────────────────────────────────────────────────
+        # ── TP fallback: $4 profit target ────────────────────────────────────
         if not valid_tps:
-            default_tp = round(live_price + 10, 2) if action == "BUY" else round(live_price - 10, 2)
-            log.warning(f"No valid TPs — using default TP {default_tp}")
-            valid_tps = [default_tp]
+            try:
+                tick_value = sym_info.trade_tick_value if sym_info else 0
+                tick_size  = sym_info.trade_tick_size  if sym_info else 0
+                if tick_value > 0 and tick_size > 0:
+                    tp_distance = (4.0 / (tick_value * per_lot)) * tick_size
+                else:
+                    tp_distance = 10.0
+            except Exception:
+                tp_distance = 10.0
 
-        # ── Lot split ────────────────────────────────────────────────────────
-        sym_info = mt5.symbol_info(symbol)
-        min_lot  = sym_info.volume_min  if sym_info else 0.01
-        lot_step = sym_info.volume_step if sym_info else 0.01
-        per_lot  = max(min_lot, round(LOT / len(valid_tps), 2))
-        per_lot  = round(round(per_lot / lot_step) * lot_step, 2)
+            default_tp = round(live_price + tp_distance, 2) if action == "BUY" else round(live_price - tp_distance, 2)
+            log.warning(f"No TP in signal — auto TP set to {default_tp} (~$4 profit)")
+            valid_tps = [default_tp]
 
         log.info(f"Live: {live_price} | SL: {sl} | TPs: {valid_tps} | Lot/trade: {per_lot}")
 
