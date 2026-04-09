@@ -1,42 +1,29 @@
 from telethon import TelegramClient, events
 import MetaTrader5 as mt5
 from parser import parse_signal
-from monitor import register_commands, position_monitor, ADMIN_ID
 import json
 import logging
-import asyncio
 from datetime import datetime
 
 # =========================
-# LOGGING SETUP
+# LOGGING
 # =========================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("bot.log", encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 log = logging.getLogger(__name__)
 
 # =========================
-# TELEGRAM CONFIG
+# CONFIG
 # =========================
 api_id   = 38573702
 api_hash = "d9d60a5689656529b3e23a21d3553a65"
 CHANNEL_ID = -1001402220998
-
-# =========================
-# TRADING CONFIG
-# =========================
 LOT = 0.01
 
 # =========================
-# INIT MT5
+# MT5 INIT
 # =========================
 if not mt5.initialize():
-    log.critical("MT5 initialization failed — exiting")
+    log.critical("MT5 init failed")
     quit()
 
 log.info("MT5 connected")
@@ -44,11 +31,10 @@ log.info("MT5 connected")
 client = TelegramClient("session", api_id, api_hash)
 
 # =========================
-# SYMBOL MAPPER (🔥 FIX)
+# SYMBOL FIX
 # =========================
 def map_symbol(symbol):
-    symbols = mt5.symbols_get()
-    for s in symbols:
+    for s in mt5.symbols_get():
         if symbol in s.name:
             return s.name
     return None
@@ -59,15 +45,13 @@ def map_symbol(symbol):
 last_message = None
 
 # =========================
-# SEND TRADE
+# TRADE EXECUTION
 # =========================
 def send_trade(data):
     try:
-        symbol_raw = data["symbol"]
-        symbol = map_symbol(symbol_raw)
-
+        symbol = map_symbol(data["symbol"])
         if not symbol:
-            log.error(f"No matching broker symbol for {symbol_raw}")
+            log.error("Symbol not found in broker")
             return
 
         action = data["action"]
@@ -76,12 +60,17 @@ def send_trade(data):
 
         tick = mt5.symbol_info_tick(symbol)
         if not tick:
-            log.error(f"Symbol {symbol} not available")
+            log.error("Symbol not available")
             return
 
         price = tick.ask if action == "BUY" else tick.bid
 
-        tp = tps[0] if tps else None
+        # ✅ TP fallback
+        if not tps:
+            log.warning("No TP found — using default TP")
+            tp = price + 5 if action == "BUY" else price - 5
+        else:
+            tp = tps[0]
 
         order_type = mt5.ORDER_TYPE_BUY if action == "BUY" else mt5.ORDER_TYPE_SELL
 
@@ -102,46 +91,45 @@ def send_trade(data):
 
         result = mt5.order_send(request)
 
+        # ✅ FIX crash
+        if result is None:
+            log.error("MT5 returned None (AutoTrading OFF or market closed)")
+            return
+
         if result.retcode == mt5.TRADE_RETCODE_DONE:
-            log.info(f"Trade executed | {symbol} {action} | ticket={result.order}")
+            log.info(f"Trade executed | ticket={result.order}")
             log_trade(symbol, action, price, sl, tp, LOT, result.order)
         else:
-            log.error(f"Trade failed | retcode={result.retcode} | {result.comment}")
+            log.error(f"Trade failed | {result.retcode} | {result.comment}")
 
     except Exception as e:
-        log.exception(f"send_trade crashed: {e}")
+        log.exception(f"send_trade error: {e}")
 
 # =========================
-# LOG TRADE
+# LOGGING TRADES
 # =========================
-def log_trade(symbol, action, entry, sl, tp, lot, ticket=None):
+def log_trade(symbol, action, entry, sl, tp, lot, ticket):
+    record = {
+        "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "symbol": symbol,
+        "action": action,
+        "entry": entry,
+        "sl": sl,
+        "tp": tp,
+        "lot": lot,
+        "ticket": ticket
+    }
+
     try:
-        trade_record = {
-            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "symbol": symbol,
-            "action": action,
-            "entry": entry,
-            "sl": sl,
-            "tp": tp,
-            "lot": lot,
-            "ticket": ticket,
-        }
+        with open("trades.json", "r") as f:
+            data = json.load(f)
+    except:
+        data = []
 
-        try:
-            with open("trades.json", "r") as f:
-                trades = json.load(f)
-        except:
-            trades = []
+    data.append(record)
 
-        trades.append(trade_record)
-
-        with open("trades.json", "w") as f:
-            json.dump(trades, f, indent=4)
-
-        log.info("Trade logged")
-
-    except Exception as e:
-        log.exception(f"log_trade failed: {e}")
+    with open("trades.json", "w") as f:
+        json.dump(data, f, indent=4)
 
 # =========================
 # TELEGRAM HANDLER
@@ -150,44 +138,28 @@ def log_trade(symbol, action, entry, sl, tp, lot, ticket=None):
 async def handler(event):
     global last_message
 
-    try:
-        message = event.message.message
+    msg = event.message.message
 
-        # 🚫 duplicate protection
-        if message == last_message:
-            log.warning("Duplicate message skipped")
-            return
+    if msg == last_message:
+        log.warning("Duplicate skipped")
+        return
 
-        last_message = message
+    last_message = msg
 
-        log.info(f"New message:\n{message}")
+    log.info(f"New message:\n{msg}")
 
-        data = parse_signal(message)
+    data = parse_signal(msg)
+    log.info(f"Parsed: {data}")
 
-        log.info(f"Parsed signal: {data}")
+    if not data["valid"]:
+        log.warning("Invalid signal")
+        return
 
-        # basic safety (only required fields)
-        if not data["symbol"] or not data["action"] or not data["entry"]:
-            log.warning("Invalid signal — missing essential fields")
-            return
-
-        send_trade(data)
-
-    except Exception as e:
-        log.exception(f"Handler crashed: {e}")
+    send_trade(data)
 
 # =========================
-# MAIN
+# START
 # =========================
-async def main():
-    await client.start()
-    register_commands(client)
-
-    log.info("Bot is running...")
-
-    if ADMIN_ID:
-        asyncio.create_task(position_monitor(client, ADMIN_ID))
-
-    await client.run_until_disconnected()
-
-asyncio.run(main())
+client.start()
+log.info("Bot running...")
+client.run_until_disconnected()
